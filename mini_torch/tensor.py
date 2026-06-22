@@ -134,6 +134,61 @@ class Tensor:
         if self.data.size != 1:
             raise ValueError("backward() can only be called on a scalar Tensor.")
 
-            
-        raise NotImplementedError
+        from collections import deque
+
+        topo = []
+        visited = set()
+
+        # 1. build topo graph
+        def build(v):
+            if id(v) in visited:
+                return
+            visited.add(id(v))
+
+            if v.grad_fn is not None:
+                for p in v.grad_fn.parents:
+                    build(p)
+                topo.append(v)
+
+        build(self)
+
+        # 2. init gradient
+        grads = {id(self): np.ones_like(self.data)}
+
+        # 3. reverse traversal
+        for v in reversed(topo):
+            grad_out = grads.get(id(v), None)
+            if grad_out is None:
+                continue
+
+            fn = v.grad_fn
+            if fn is None:
+                continue
+
+            grad_inputs = fn.backward(fn.ctx, grad_out)
+
+            if not isinstance(grad_inputs, tuple):
+                grad_inputs = (grad_inputs,)
+
+            for parent, g in zip(fn.parents, grad_inputs):
+                if not parent.requires_grad:
+                    continue
+
+                # 只给叶子节点累计 .grad
+                if parent.grad_fn is None:
+                    if parent.grad is None:
+                        parent.grad = g.copy()
+                    else:
+                        parent.grad += g
+
+                # 所有节点都要继续向上传播
+                if id(parent) in grads:
+                    grads[id(parent)] += g
+                else:
+                    grads[id(parent)] = g
+
+            # cleanup (optional but matches spec)
+            v.grad_fn = None
+            fn.parents = []
+            fn.ctx = None
 

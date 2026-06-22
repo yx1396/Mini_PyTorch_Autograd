@@ -33,7 +33,11 @@ class SGD:
             - Does not modify `p.grad`.
         """
         #TODO: update all managed parameters using gradient descent update rule and the specified learning rate.
-        raise NotImplementedError
+        for p in self.params:
+            if p.grad is None:
+                continue
+
+            p.data -= self.lr * p.grad
 
     def zero_grad(self):
         """
@@ -50,4 +54,5 @@ class SGD:
               so subsequent backward passes start fresh and do not accumulate.
         """
         #TODO: clear the gradients of all managed parameters.
-        raise NotImplementedError
+        for p in self.params:
+            p.grad = None

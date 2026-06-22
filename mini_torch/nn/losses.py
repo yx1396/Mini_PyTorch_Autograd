@@ -40,4 +40,13 @@ class MSELoss(Module):
             - Does not modify `pred` or `target` in-place.
         """
         #TODO: implement MSE loss
-        raise NotImplementedError
+        target_t = (
+            target
+            if isinstance(target, Tensor)
+            else Tensor(
+                np.asarray(target),
+                requires_grad=False
+            )
+        )
+
+        return ((pred - target_t) ** 2).mean()

@@ -60,6 +60,9 @@ class Function:
         """
         parents = tuple(as_tensor(x) for x in inputs)
         req = any(p.requires_grad for p in parents)
+
+        # any():如果可迭代对象中至少有一个元素为 True（或真值），就返回 True；否则返回 False。
+
         # TODO:
         # 1) Create a Context Object, run cls.forward(ctx, ...) to compute the output value. 
             # The forward method in its subclass will compute the forward pass and store necessary information for backward in the Context Object.
@@ -69,7 +72,19 @@ class Function:
         
         # 3) Create the computation-graph node appropriately and attach it to the output Tensor (.grad_fn).
             # Note cls(the first argument) is the subclass of Function, so you can create the node by cls(...), with appropriate parameters.
-        raise NotImplementedError
+
+        ctx = Context()
+
+        out_data = cls.forward(ctx, *(p.data for p in parents))
+
+        out = Tensor(out_data, requires_grad=req)
+
+        if req:
+            out.grad_fn = cls(ctx, parents)
+
+        return out
+        # Tensor -> 取 data -> forward() -> 得到结果 -> 创建 Tensor -> 连接计算图
+        # 创建 Context -> 调用 Add.forward -> 得到 numpy结果 -> 创建输出 Tensor -> 创建 Add节点 -> out.grad_fn 指向 Add节点
 
 
 # ===== Functions (ops) =====
@@ -95,7 +110,8 @@ class Add(Function):
     @staticmethod
     def forward(ctx, a, b):
         # TODO: implement forward
-        raise NotImplementedError
+        ctx.save_for_backward(a, b)
+        return (a + b).astype(np.float32)
     """
     Backward:
         Inputs:
@@ -111,7 +127,28 @@ class Add(Function):
     @staticmethod
     def backward(ctx, grad_out):
         # TODO: implement backward
-        raise NotImplementedError
+        a, b = ctx.saved_tensors
+
+        grad_a = grad_out
+        grad_b = grad_out
+
+        # ---- reduce for a ----
+        while grad_a.ndim > a.ndim:
+            grad_a = grad_a.sum(axis=0)
+
+        for i in range(a.ndim):
+            if a.shape[i] == 1:
+                grad_a = grad_a.sum(axis=i, keepdims=True)  # keepdims=True 保留维度
+
+        # ---- reduce for b ----
+        while grad_b.ndim > b.ndim:
+            grad_b = grad_b.sum(axis=0)
+
+        for i in range(b.ndim):
+            if b.shape[i] == 1:
+                grad_b = grad_b.sum(axis=i, keepdims=True)
+
+        return grad_a, grad_b
 
 class Pow(Function):
     """
@@ -135,7 +172,11 @@ class Pow(Function):
     @staticmethod
     def forward(ctx, a, b):
         # TODO: implement forward
-        raise NotImplementedError
+        a = np.array(a, dtype=np.float32)
+        b = np.array(b, dtype=np.float32)
+
+        ctx.save_for_backward(a, b)
+        return (a ** b).astype(np.float32)
 
     """
     Backward:
@@ -152,7 +193,30 @@ class Pow(Function):
     @staticmethod
     def backward(ctx, grad_out):
         # TODO: implement backward
-        raise NotImplementedError
+        a, b = ctx.saved_tensors
+
+        eps = 1e-12  # avoid log(0)
+
+        grad_a = grad_out * (b * (a ** (b - 1)))
+
+        safe_a = np.where(a > 0, a, 1.0)
+        grad_b = grad_out * ((a ** b) * np.log(safe_a))
+
+        # broadcast fix (same as Mul)
+        def reduce(grad, base):
+            while grad.ndim > base.ndim:
+                grad = grad.sum(axis=0)
+            for i, (g, bsz) in enumerate(zip(grad.shape, base.shape)):
+                if bsz == 1:
+                    grad = grad.sum(axis=i, keepdims=True)
+            return grad
+
+        grad_a = reduce(grad_a, a)
+        grad_b = reduce(grad_b, b)
+
+        return grad_a.astype(np.float32), grad_b.astype(np.float32)
+    # NOTE:
+    # d(a^b)/db = a^b ln(a) is only defined for a > 0
 
 class Mul(Function):
     @staticmethod
@@ -176,7 +240,11 @@ class Mul(Function):
             required to compute gradients during the backward pass.
         """
         # TODO: implement forward
-        raise NotImplementedError
+        a = np.array(a, dtype=np.float32)
+        b = np.array(b, dtype=np.float32)
+
+        ctx.save_for_backward(a, b)
+        return (a * b).astype(np.float32)
 
     @staticmethod
     def backward(ctx, grad_out):
@@ -193,7 +261,26 @@ class Mul(Function):
                 the same shape as its corresponding input.
         """
         # TODO: implement backward
-        raise NotImplementedError
+        a, b = ctx.saved_tensors
+
+        grad_a = grad_out * b
+        grad_b = grad_out * a
+
+        # handle broadcast for a
+        while grad_a.ndim > a.ndim:
+            grad_a = grad_a.sum(axis=0)
+        for i, (ga, aa) in enumerate(zip(grad_a.shape, a.shape)):
+            if aa == 1:
+                grad_a = grad_a.sum(axis=i, keepdims=True)
+
+        # handle broadcast for b
+        while grad_b.ndim > b.ndim:
+            grad_b = grad_b.sum(axis=0)
+        for i, (gb, bb) in enumerate(zip(grad_b.shape, b.shape)):
+            if bb == 1:
+                grad_b = grad_b.sum(axis=i, keepdims=True)
+
+        return grad_a.astype(np.float32), grad_b.astype(np.float32)
 
 
 class Neg(Function):
@@ -215,7 +302,7 @@ class Neg(Function):
             required to compute gradients during the backward pass.
         """
         # TODO: implement forward
-        raise NotImplementedError
+        return (-x).astype(np.float32)
 
     @staticmethod
     def backward(ctx, grad_out):
@@ -231,7 +318,7 @@ class Neg(Function):
                 Gradient with respect to input x, with the same shape as x.
         """
         # TODO: implement backward
-        raise NotImplementedError
+        return (-grad_out,)
 
 
 class MatMul(Function):
@@ -255,7 +342,8 @@ class MatMul(Function):
             required to compute gradients during the backward pass.
         """
         # TODO: implement forward
-        raise NotImplementedError
+        ctx.save_for_backward(a, b)
+        return (a @ b).astype(np.float32)
 
     @staticmethod
     def backward(ctx, grad_out):
@@ -274,7 +362,46 @@ class MatMul(Function):
             You might find np.swapaxes useful here.
         """
         # TODO: implement backward
-        raise NotImplementedError
+        a, b = ctx.saved_tensors
+
+        # -------------------------
+        # Case 1: dot
+        # -------------------------
+        if a.ndim == 1 and b.ndim == 1:
+            return grad_out * b, grad_out * a
+
+        # -------------------------
+        # Case 2: mat @ vec
+        # -------------------------
+        if b.ndim == 1:
+            grad_a = grad_out[:, None] @ b[None, :]
+            grad_b = a.T @ grad_out
+            return grad_a, grad_b
+
+        # -------------------------
+        # Case 3: vec @ mat
+        # -------------------------
+        if a.ndim == 1:
+            grad_a = grad_out @ b.T
+            grad_b = a[:, None] @ grad_out[None, :]
+            return grad_a, grad_b
+
+        # -------------------------
+        # Case 4: general matmul
+        # -------------------------
+        grad_a = grad_out @ np.swapaxes(b, -1, -2)
+        grad_b = np.swapaxes(a, -1, -2) @ grad_out
+
+        # -------------------------
+        # 🔥 CRITICAL: broadcast reduction
+        # -------------------------
+        while grad_a.ndim > a.ndim:
+            grad_a = grad_a.sum(axis=0)
+
+        while grad_b.ndim > b.ndim:
+            grad_b = grad_b.sum(axis=0)
+
+        return grad_a, grad_b
 
 #Example ops.
 class Sum(Function):
@@ -308,7 +435,9 @@ class Mean(Function):
             required to compute gradients during the backward pass.
         """
         # TODO: implement forward
-        raise NotImplementedError
+        ctx.save_values(x.shape, x.size)
+
+        return np.array(x.mean(), dtype=np.float32)
 
     @staticmethod
     def backward(ctx, grad_out):
@@ -324,7 +453,15 @@ class Mean(Function):
                 Gradient with respect to input x, with the same shape as x.
         """
         # TODO: implement backward
-        raise NotImplementedError
+        shape, size = ctx.saved_values
+
+        grad_x = (
+                np.ones(shape, dtype=np.float32)
+                * grad_out
+                / size
+        )
+
+        return (grad_x,)
 
 
 class ReLU(Function):
@@ -346,7 +483,9 @@ class ReLU(Function):
             required to compute gradients during the backward pass.
         """
         # TODO: implement forward
-        raise NotImplementedError
+        ctx.save_for_backward(x)
+
+        return np.maximum(x, 0).astype(np.float32)
 
     @staticmethod
     def backward(ctx, grad_out):
@@ -362,7 +501,11 @@ class ReLU(Function):
                 Gradient with respect to input x.
         """
         # TODO: implement backward
-        raise NotImplementedError
+        (x,) = ctx.saved_tensors
+
+        grad = grad_out * (x > 0)
+
+        return (grad.astype(np.float32),)
 
 
 class Sigmoid(Function):
@@ -395,7 +538,11 @@ class Sigmoid(Function):
                 Gradient with respect to input x.
         """
         # TODO: implement backward
-        raise NotImplementedError
+        (out,) = ctx.saved_tensors
+
+        grad_x = grad_out * out * (1.0 - out)
+
+        return (grad_x.astype(np.float32),)
     
     
 class CrossEntropy(Function):
